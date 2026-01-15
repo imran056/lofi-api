@@ -1,7 +1,7 @@
 {
-  "name": "lofi-api",
+  "name": "lofi-remix-api",
   "version": "3.0.0",
-  "description": "Professional Audio Effects API - YouTube Quality",
+  "description": "Professional LoFi Remix API - YouTube Quality",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -12,6 +12,6 @@
     "@ffmpeg-installer/ffmpeg": "^1.1.0"
   },
   "engines": {
-    "node": "18.x"
+    "node": ">=18.x"
   }
 }
