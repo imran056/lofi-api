@@ -23,6 +23,15 @@ app.use(express.json({ limit: '50mb' }));
 app.use('/outputs', express.static(OUTPUTS_DIR));
 app.use(express.urlencoded({ extended: true }));
 
+// CORS
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
+
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({
@@ -49,7 +58,6 @@ app.get('/', (req, res) => {
 
 // YOUTUBE-QUALITY EFFECT FILTERS
 const effectFilters = {
-  // YouTube-style slowed reverb (90% quality)
   youtube_slowed: [
     'asetrate=44100*0.82',
     'aresample=44100',
@@ -68,7 +76,6 @@ const effectFilters = {
     'volume=1.35'
   ],
   
-  // TikTok viral style
   tiktok_slowed: [
     'asetrate=44100*0.80',
     'aresample=44100',
@@ -82,7 +89,6 @@ const effectFilters = {
     'volume=1.4'
   ],
   
-  // Ultra slowed (maximum emotion)
   ultra_slowed: [
     'asetrate=44100*0.70',
     'aresample=44100',
@@ -97,7 +103,6 @@ const effectFilters = {
     'volume=1.5'
   ],
   
-  // Classic LoFi
   lofi_chill: [
     'lowpass=f=3000:p=1',
     'highpass=f=300:p=1',
@@ -108,7 +113,6 @@ const effectFilters = {
     'volume=1.4'
   ],
   
-  // Bass boost
   bass_boost: [
     'bass=g=15:f=70:w=0.8',
     'equalizer=f=50:width_type=h:width=50:g=10',
@@ -118,7 +122,6 @@ const effectFilters = {
     'volume=1.6'
   ],
   
-  // Nightcore
   nightcore: [
     'asetrate=44100*1.15',
     'aresample=44100',
@@ -202,7 +205,7 @@ app.post('/remix', async (req, res) => {
         .audioBitrate('256k')
         .audioFrequency(44100)
         .audioCodec('libmp3lame')
-        .audioQuality(0) // Highest quality
+        .audioQuality(0)
         .on('start', (cmd) => {
           console.log('🎚️ FFmpeg started');
         })
@@ -263,7 +266,7 @@ app.post('/remix', async (req, res) => {
   }
 });
 
-// Cleanup old files (every hour)
+// Cleanup old files
 setInterval(() => {
   const oneHourAgo = Date.now() - (60 * 60 * 1000);
   
