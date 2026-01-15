@@ -37,7 +37,11 @@ app.get('/', (req, res) => {
   res.json({
     status: '🎵 ONLINE',
     message: 'Professional LoFi Remix API - YouTube Quality',
-    version: '3.0.0',
+    version: '3.1.0',
+    memory: {
+      used: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`,
+      total: `${Math.round(process.memoryUsage().heapTotal / 1024 / 1024)}MB`
+    },
     effects: {
       'youtube_slowed': 'YouTube-style slowed + reverb (BEST)',
       'tiktok_slowed': 'TikTok viral slowed reverb',
@@ -132,41 +136,101 @@ const effectFilters = {
   ]
 };
 
-// Download file helper
+// Enhanced download with retry and proper headers
 function downloadFile(url, dest) {
   return new Promise((resolve, reject) => {
+    console.log(`📥 Downloading from: ${url}`);
+    
     const file = fs.createWriteStream(dest);
     const protocol = url.startsWith('https') ? https : http;
     
-    protocol.get(url, (response) => {
+    const options = {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': '*/*'
+      },
+      timeout: 60000 // 60 second timeout
+    };
+    
+    const request = protocol.get(url, options, (response) => {
+      // Handle redirects
+      if (response.statusCode === 301 || response.statusCode === 302) {
+        const redirectUrl = response.headers.location;
+        console.log(`↪️ Redirecting to: ${redirectUrl}`);
+        file.close();
+        fs.unlink(dest, () => {});
+        return downloadFile(redirectUrl, dest).then(resolve).catch(reject);
+      }
+      
       if (response.statusCode !== 200) {
-        reject(new Error(`Failed to download: ${response.statusCode}`));
+        file.close();
+        fs.unlink(dest, () => {});
+        reject(new Error(`Download failed: HTTP ${response.statusCode}`));
         return;
       }
+      
+      const totalSize = parseInt(response.headers['content-length'] || '0');
+      let downloadedSize = 0;
+      
+      response.on('data', (chunk) => {
+        downloadedSize += chunk.length;
+        if (totalSize > 0) {
+          const progress = ((downloadedSize / totalSize) * 100).toFixed(1);
+          console.log(`📥 Download progress: ${progress}%`);
+        }
+      });
       
       response.pipe(file);
       
       file.on('finish', () => {
         file.close();
+        console.log(`✅ Download complete: ${(downloadedSize / 1024 / 1024).toFixed(2)}MB`);
         resolve();
       });
-    }).on('error', (err) => {
+      
+      file.on('error', (err) => {
+        file.close();
+        fs.unlink(dest, () => {});
+        reject(err);
+      });
+    });
+    
+    request.on('timeout', () => {
+      request.destroy();
+      file.close();
+      fs.unlink(dest, () => {});
+      reject(new Error('Download timeout after 60s'));
+    });
+    
+    request.on('error', (err) => {
+      file.close();
       fs.unlink(dest, () => {});
       reject(err);
     });
+    
+    request.end();
   });
 }
 
-// Main remix endpoint
+// Main remix endpoint with better error handling
 app.post('/remix', async (req, res) => {
   let inputFile = null;
   let outputFile = null;
+  const startTime = Date.now();
   
   try {
     const { audioUrl, effect = 'youtube_slowed' } = req.body;
     
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('🎵 NEW REQUEST');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log(`📥 URL: ${audioUrl}`);
+    console.log(`🎚️ Effect: ${effect}`);
+    console.log(`💾 Memory: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`);
+    
     // Validation
     if (!audioUrl) {
+      console.log('❌ Missing audioUrl');
       return res.status(400).json({ 
         error: 'audioUrl is required',
         example: {
@@ -177,29 +241,49 @@ app.post('/remix', async (req, res) => {
     }
     
     if (!effectFilters[effect]) {
+      console.log(`❌ Invalid effect: ${effect}`);
       return res.status(400).json({ 
         error: 'Invalid effect',
         available: Object.keys(effectFilters)
       });
     }
     
-    console.log(`🎵 Processing: ${effect}`);
-    console.log(`📥 URL: ${audioUrl}`);
-    
-    // Download audio
+    // Download audio with timeout
     const timestamp = Date.now();
     inputFile = path.join(UPLOADS_DIR, `${timestamp}_input.mp3`);
     const outputFileName = `${timestamp}_${effect}.mp3`;
     outputFile = path.join(OUTPUTS_DIR, outputFileName);
     
-    console.log('⬇️ Downloading audio...');
-    await downloadFile(audioUrl, inputFile);
-    console.log('✅ Download complete!');
+    console.log('⏳ Starting download...');
+    
+    try {
+      await Promise.race([
+        downloadFile(audioUrl, inputFile),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Download timeout after 60s')), 60000)
+        )
+      ]);
+    } catch (downloadError) {
+      console.error('❌ Download failed:', downloadError.message);
+      throw new Error(`Download failed: ${downloadError.message}`);
+    }
+    
+    // Check file size
+    const fileSize = fs.statSync(inputFile).size;
+    const fileSizeMB = (fileSize / 1024 / 1024).toFixed(2);
+    console.log(`✅ Downloaded: ${fileSizeMB}MB`);
+    
+    if (fileSize < 1000) {
+      throw new Error('Downloaded file is too small - might be invalid');
+    }
     
     // Process with FFmpeg
     const filters = effectFilters[effect];
+    console.log('🎚️ Starting FFmpeg processing...');
     
     await new Promise((resolve, reject) => {
+      let lastProgress = 0;
+      
       ffmpeg(inputFile)
         .audioFilters(filters)
         .audioBitrate('256k')
@@ -207,32 +291,51 @@ app.post('/remix', async (req, res) => {
         .audioCodec('libmp3lame')
         .audioQuality(0)
         .on('start', (cmd) => {
-          console.log('🎚️ FFmpeg started');
+          console.log('🎚️ FFmpeg command:', cmd.substring(0, 100) + '...');
         })
         .on('progress', (progress) => {
-          if (progress.percent) {
-            console.log(`⏳ Progress: ${progress.percent.toFixed(1)}%`);
+          if (progress.percent && Math.floor(progress.percent) > lastProgress) {
+            lastProgress = Math.floor(progress.percent);
+            if (lastProgress % 10 === 0) {
+              console.log(`⏳ Progress: ${lastProgress}%`);
+            }
           }
         })
         .on('end', () => {
-          console.log('✅ Processing complete!');
+          console.log('✅ FFmpeg processing complete!');
           resolve();
         })
         .on('error', (err) => {
           console.error('❌ FFmpeg error:', err.message);
-          reject(err);
+          reject(new Error(`FFmpeg processing failed: ${err.message}`));
         })
         .save(outputFile);
     });
     
+    // Check output file
+    const outputSize = fs.statSync(outputFile).size;
+    const outputSizeMB = (outputSize / 1024 / 1024).toFixed(2);
+    console.log(`✅ Output file: ${outputSizeMB}MB`);
+    
+    if (outputSize < 1000) {
+      throw new Error('Output file is too small - processing might have failed');
+    }
+    
     // Success response
+    const processingTime = ((Date.now() - startTime) / 1000).toFixed(1);
     const downloadUrl = `${req.protocol}://${req.get('host')}/outputs/${outputFileName}`;
+    
+    console.log(`✅ SUCCESS in ${processingTime}s`);
+    console.log(`🔗 Download: ${downloadUrl}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
     
     res.json({
       success: true,
       effect: effect,
       quality: 'YouTube/TikTok Level',
       downloadUrl: downloadUrl,
+      processingTime: `${processingTime}s`,
+      fileSize: `${outputSizeMB}MB`,
       message: `🎵 ${effect} effect applied successfully!`,
       tips: {
         download: 'Click the downloadUrl to get your file',
@@ -240,15 +343,23 @@ app.post('/remix', async (req, res) => {
       }
     });
     
-    // Cleanup input file
+    // Cleanup input file after 5 seconds
     setTimeout(() => {
       if (inputFile && fs.existsSync(inputFile)) {
-        fs.unlink(inputFile, () => {});
+        fs.unlink(inputFile, (err) => {
+          if (!err) console.log(`🗑️ Cleaned input: ${path.basename(inputFile)}`);
+        });
       }
     }, 5000);
     
   } catch (error) {
-    console.error('❌ Error:', error);
+    const processingTime = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.error('❌ ERROR after', processingTime + 's');
+    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.error(error.message);
+    console.error(error.stack);
+    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
     
     // Cleanup on error
     if (inputFile && fs.existsSync(inputFile)) {
@@ -261,12 +372,17 @@ app.post('/remix', async (req, res) => {
     res.status(500).json({ 
       error: 'Processing failed',
       message: error.message,
-      tip: 'Make sure the audio URL is valid and accessible'
+      processingTime: `${processingTime}s`,
+      tips: [
+        'Make sure the audio URL is accessible',
+        'Try using tmpfiles.org or 0x0.st for file hosting',
+        'File should be under 50MB for best results'
+      ]
     });
   }
 });
 
-// Cleanup old files
+// Cleanup old files every hour
 setInterval(() => {
   const oneHourAgo = Date.now() - (60 * 60 * 1000);
   
@@ -291,10 +407,34 @@ setInterval(() => {
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'healthy', uptime: process.uptime() });
+  const uptime = process.uptime();
+  const memory = process.memoryUsage();
+  
+  res.json({ 
+    status: 'healthy',
+    uptime: `${Math.floor(uptime / 60)}m ${Math.floor(uptime % 60)}s`,
+    memory: {
+      used: `${Math.round(memory.heapUsed / 1024 / 1024)}MB`,
+      total: `${Math.round(memory.heapTotal / 1024 / 1024)}MB`,
+      rss: `${Math.round(memory.rss / 1024 / 1024)}MB`
+    }
+  });
+});
+
+// Error handler
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({
+    error: 'Internal server error',
+    message: err.message
+  });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🎵 YouTube Quality API Ready!`);
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log(`🚀 LoFi Remix API v3.1.0`);
+  console.log(`🎵 Server running on port ${PORT}`);
+  console.log(`💾 Memory: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 });
