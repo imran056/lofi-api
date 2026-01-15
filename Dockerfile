@@ -1,23 +1,21 @@
-FROM node:18-slim
-
-# Install FFmpeg
-RUN apt-get update && \
-    apt-get install -y ffmpeg && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+FROM node:18-alpine
 
 WORKDIR /app
 
-# Install dependencies
-COPY package*.json ./
-RUN npm ci --only=production
+# Install FFmpeg
+RUN apk add --no-cache ffmpeg
 
-# Copy app files
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm install
+
+# Copy source code
 COPY . .
 
-# Create directories
-RUN mkdir -p uploads outputs
-
+# Expose port
 EXPOSE 3080
 
+# Start server
 CMD ["node", "server.js"]
